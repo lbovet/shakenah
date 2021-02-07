@@ -1,18 +1,24 @@
 #include "M5Atom.h"
 #include <OSCMessage.h>
 #include <SLIPEncodedSerial.h>
+#include "network.h"
+#include "WiFi.h"
+#include <WiFiUdp.h>
+
+WiFiUDP Udp;
 
 long tprev;
 
-#define MIN_SIZE 500.0
-#define MAX_SIZE 30000.0
-#define OSC
+#define MIN_SIZE 1000.0
+#define MAX_SIZE 5000.0
+#define SERIAL_OSC
+#define WIFI
 
-#ifdef OSC
+#ifdef SERIAL_OSC
 SLIPEncodedSerial SLIPSerial(Serial);
 #endif
 
-double size = MIN_SIZE;
+double size = (MAX_SIZE + MIN_SIZE) / 2;
 struct Pea
 {
   double pos;
@@ -28,10 +34,25 @@ void setup()
   delay(50);
   M5.dis.drawpix(0, 0xf00000);
   M5.IMU.Init();
-#ifdef OSC
+#ifdef SERIAL_OSC
   SLIPSerial.begin(115200);
 #endif
   tprev = millis();
+
+#ifdef WIFI
+  WiFi.begin(NETWORK_SSID, NETWORK_PWD);
+  WiFi.setHostname("shakenah");
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+  }
+
+#ifndef SERIAL_OSC
+  Serial.print("Connected to the WiFi network. IP: ");
+  Serial.println(WiFi.localIP());
+#endif
+#endif
 }
 
 long step = 0;
@@ -43,13 +64,13 @@ void calc(Pea *pea, float acc, float dt)
   double pos = pea->pos + pea->v * dt;
   if (pos < 0)
   {
-    hit = pea->pos > 0 ? abs(v) : 0;
+    hit = pea->pos > 0 ? v : 0;
     pea->pos = 0;
     pea->v = 0;
   }
   else if (pos > size)
   {
-    hit = pea->pos < size ? abs(v) : 0;
+    hit = pea->pos < size ? v : 0;
     pea->pos = size;
     pea->v = 0;
   }
@@ -63,15 +84,20 @@ void calc(Pea *pea, float acc, float dt)
 
 float realAcc(int h, float acc, float angular)
 {
-  return acc / 2 + h * angular / 2000;
+  return acc * 0.43; // + h*angular / 15000;
 }
 
 void draw(int index, float pos, int hit)
 {
-  int p = (index * 5) + 5 * (pos / (size + 1));
-  M5.dis.drawpix(p - 1, 0x000000);
-  M5.dis.drawpix(p + 1, 0x000000);
-  M5.dis.drawpix(p, hit > 0 ? (0x000033 + ((byte)min(255, 30 * (hit / 100) ^ 2))) * 256 : 0x000011);
+  int line = index * 5;
+  int p = 5 * (pos / (size + 1));
+  for(int i=0; i<5; i++) {
+    if(i == p) {
+      M5.dis.drawpix(line + p, hit > 0 ? (0x000033 + ((byte)min(255, 30 * (hit / 100) ^ 2))) * 256 : 0x220022);
+    } else {
+      M5.dis.drawpix(line + i, 0x000000);
+    }
+  }
 }
 
 void send(Pea peas[])
@@ -81,11 +107,16 @@ void send(Pea peas[])
   for (int i = 0; i < 5; i++)
   {
     msg.add(peas[i].hit);
-    sum += peas[i].hit;
+    sum += abs(peas[i].hit);
   }
   if (sum > 0)
   {
-#ifdef OSC
+#ifdef WIFI
+    Udp.beginPacket(NETWORK_PEER, 6101);
+    msg.send(Udp);
+    Udp.endPacket();
+#endif
+#ifdef SERIAL_OSC
     SLIPSerial.beginPacket();
     msg.send(SLIPSerial);
     SLIPSerial.endPacket();
@@ -101,12 +132,12 @@ void loop()
 {
   if (M5.Btn.wasPressed())
   {
-    size *= 2;
+    size += (MAX_SIZE - MIN_SIZE) / 5;
     if (size > MAX_SIZE)
     {
       size = MIN_SIZE;
     }
-    for (int i = 0; i < size * 25 / (MAX_SIZE + 1); i++)
+    for (int i = 0; i < (size - MIN_SIZE) * 5 / (MAX_SIZE - MIN_SIZE + 1); i++)
     {
       M5.dis.drawpix(i, 0xf00000);
     }
@@ -129,12 +160,6 @@ void loop()
   }
 
   send(peas);
-
-  step++;
-  if (step % 20 == 0)
-  {
-    //Serial.printf("% 02.2f - % 02.2f,% 02.2f\n", gz, realAcc(0, ax, gz), realAcc(4, ax, gz));
-  }
 
   tprev = t;
   M5.update();
