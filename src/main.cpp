@@ -4,18 +4,27 @@
 #include "network.h"
 #include "WiFi.h"
 #include <WiFiUdp.h>
+#include "BluetoothSerial.h"
+#include "SLIPEncodedStream.h"
 
 WiFiUDP Udp;
+IPAddress peer;
+BluetoothSerial Bluetooth;
 
 long tprev;
 
 #define MIN_SIZE 1000.0
 #define MAX_SIZE 5000.0
-#define SERIAL_OSC
-#define WIFI
+//#define SERIAL_OSC
+//#define WIFI
+#define BLUETOOTH
 
 #ifdef SERIAL_OSC
 SLIPEncodedSerial SLIPSerial(Serial);
+#endif
+
+#ifdef BLUETOOTH
+SLIPEncodedStream SLIPStream(Bluetooth);
 #endif
 
 double size = (MAX_SIZE + MIN_SIZE) / 2;
@@ -39,15 +48,20 @@ void setup()
 #endif
   tprev = millis();
 
+#ifdef BLUETOOTH
+  delay(500);
+  Bluetooth.begin("Shakenah");
+  Serial.println("Bluetooth Device is Ready to Pair");
+#endif
+
 #ifdef WIFI
   WiFi.begin(NETWORK_SSID, NETWORK_PWD);
   WiFi.setHostname("shakenah");
-
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
   }
-
+  WiFi.hostByName(NETWORK_PEER, peer);
 #ifndef SERIAL_OSC
   Serial.print("Connected to the WiFi network. IP: ");
   Serial.println(WiFi.localIP());
@@ -91,10 +105,14 @@ void draw(int index, float pos, int hit)
 {
   int line = index * 5;
   int p = 5 * (pos / (size + 1));
-  for(int i=0; i<5; i++) {
-    if(i == p) {
+  for (int i = 0; i < 5; i++)
+  {
+    if (i == p)
+    {
       M5.dis.drawpix(line + p, hit > 0 ? (0x000033 + ((byte)min(255, 30 * (hit / 100) ^ 2))) * 256 : 0x220022);
-    } else {
+    }
+    else
+    {
       M5.dis.drawpix(line + i, 0x000000);
     }
   }
@@ -111,8 +129,14 @@ void send(Pea peas[])
   }
   if (sum > 0)
   {
+#ifdef BLUETOOTH
+    SLIPStream.beginPacket();
+    msg.send(SLIPStream);
+    SLIPStream.endPacket();
+#endif
+
 #ifdef WIFI
-    Udp.beginPacket(NETWORK_PEER, 6101);
+    Udp.beginPacket(peer, 6101);
     msg.send(Udp);
     Udp.endPacket();
 #endif
