@@ -2,12 +2,25 @@
 #include <OSCMessage.h>
 #include <SLIPEncodedSerial.h>
 
-float accX = 0, accY = 0, accZ = 0;
-float newX = 0, newY = 0, newZ = 0;
+long tprev;
 
+#define MIN_SIZE 500.0
+#define MAX_SIZE 30000.0
+#define OSC
+
+#ifdef OSC
 SLIPEncodedSerial SLIPSerial(Serial);
+#endif
 
-int light = 0;
+double size = MIN_SIZE;
+struct Pea
+{
+  double pos;
+  double v;
+  int hit;
+};
+
+Pea peas[5];
 
 void setup()
 {
@@ -15,53 +28,114 @@ void setup()
   delay(50);
   M5.dis.drawpix(0, 0xf00000);
   M5.IMU.Init();
-  M5.IMU.getAccelData(&accX, &accY, &accZ);
+#ifdef OSC
   SLIPSerial.begin(115200);
+#endif
+  tprev = millis();
 }
 
-int window = 0;
-int sum = 0;
+long step = 0;
 
-void send(int shake)
+void calc(Pea *pea, float acc, float dt)
+{
+  int hit = 0;
+  double v = pea->v + acc * dt;
+  double pos = pea->pos + pea->v * dt;
+  if (pos < 0)
+  {
+    hit = pea->pos > 0 ? abs(v) : 0;
+    pea->pos = 0;
+    pea->v = 0;
+  }
+  else if (pos > size)
+  {
+    hit = pea->pos < size ? abs(v) : 0;
+    pea->pos = size;
+    pea->v = 0;
+  }
+  else
+  {
+    pea->pos = pos;
+    pea->v = v;
+  }
+  pea->hit = hit;
+}
+
+float realAcc(int h, float acc, float angular)
+{
+  return acc / 2 + h * angular / 2000;
+}
+
+void draw(int index, float pos, int hit)
+{
+  int p = (index * 5) + 5 * (pos / (size + 1));
+  M5.dis.drawpix(p - 1, 0x000000);
+  M5.dis.drawpix(p + 1, 0x000000);
+  M5.dis.drawpix(p, hit > 0 ? (0x000033 + ((byte)min(255, 30 * (hit / 100) ^ 2))) * 256 : 0x000011);
+}
+
+void send(Pea peas[])
 {
   OSCMessage msg("/shake");
-  msg.add(shake);
-
-  SLIPSerial.beginPacket();
-  msg.send(SLIPSerial);
-  SLIPSerial.endPacket();
-  msg.empty();
-}
-
-void detect(char axis, float previous, float current)
-{
-  float diff = current - previous;
-  if (abs(diff) > 0.3)
+  int sum = 0;
+  for (int i = 0; i < 5; i++)
   {
-    int shake = (int)(abs(diff) * 100);
-    sum += shake;
-    light = min(light + shake, 2048);
-    send(shake);
+    msg.add(peas[i].hit);
+    sum += peas[i].hit;
+  }
+  if (sum > 0)
+  {
+#ifdef OSC
+    SLIPSerial.beginPacket();
+    msg.send(SLIPSerial);
+    SLIPSerial.endPacket();
+#else
+    Serial.printf("%i %i %i %i %i  \n",
+                  msg.getInt(0), msg.getInt(1), msg.getInt(2), msg.getInt(3), msg.getInt(4));
+#endif
+    msg.empty();
   }
 }
 
 void loop()
 {
-  M5.IMU.getAccelData(&newX, &newY, &newZ);
+  if (M5.Btn.wasPressed())
+  {
+    size *= 2;
+    if (size > MAX_SIZE)
+    {
+      size = MIN_SIZE;
+    }
+    for (int i = 0; i < size * 25 / (MAX_SIZE + 1); i++)
+    {
+      M5.dis.drawpix(i, 0xf00000);
+    }
+  }
 
-  detect('X', accX, newX);
-  //detect('Y', accY, newY);
-  //detect('Z', accZ, newZ);
-  accX = newX;
-  accY = newY;
-  accZ = newZ;
-  if (light > 16)
+  float gx, gy, gz, ax, ay, az;
+  M5.IMU.getGyroData(&gx, &gy, &gz);
+  M5.IMU.getAccelData(&ax, &ay, &az);
+
+  long t = millis();
+  long dt = t - tprev;
+
+  for (int i = 0; i < 5; i++)
   {
-    light -= 16;
+    calc(&peas[i], realAcc(i, ax, gz), dt);
+    if (!M5.Btn.isPressed())
+    {
+      draw(i, peas[i].pos, peas[i].hit);
+    }
   }
-  for (int i = 0; i < 25; i++)
+
+  send(peas);
+
+  step++;
+  if (step % 20 == 0)
   {
-    M5.dis.drawpix(i, min(light / 8, 255));
+    //Serial.printf("% 02.2f - % 02.2f,% 02.2f\n", gz, realAcc(0, ax, gz), realAcc(4, ax, gz));
   }
+
+  tprev = t;
   M5.update();
 }
